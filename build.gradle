@@ -1,0 +1,174 @@
+plugins {
+    id 'java'
+    id 'org.jetbrains.kotlin.jvm' version '2.3.20'
+    id 'signing'
+    id 'maven-publish'
+}
+
+java {
+    withSourcesJar()
+    withJavadocJar()
+    // Pattern-matching switch in Connection.coerceParam requires Java 21+.
+    // Keep this in sync with CMAKE_JAVA_COMPILE_FLAGS in CMakeLists.txt and
+    // the java.version / maven.compiler.{source,target} POM properties below.
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+// Kotlin must target the same JVM level as Java, otherwise Gradle refuses
+// to build (inconsistent jvm-target between compileTestJava and compileTestKotlin).
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    kotlinOptions {
+        jvmTarget = '21'
+    }
+}
+
+group = 'com.riagraph'
+def projectRoot = projectDir.parentFile.parentFile
+def cmakeFileRef = new File(projectRoot, 'CMakeLists.txt')
+if (!cmakeFileRef.exists()) {
+    cmakeFileRef = new File(projectDir.parentFile, 'riagraph/CMakeLists.txt')
+}
+if (cmakeFileRef.exists()) {
+    def cmakeFile = cmakeFileRef.text
+    def versionLine = cmakeFile.readLines().find { it.startsWith('project(RiaG VERSION ') }
+    def cmakeVersion = versionLine.split(' ')[2]
+    def versionParts = cmakeVersion.split('\\.')
+    if (versionParts.length > 3) {
+        version = versionParts[0] + '.' + versionParts[1] + '.' + versionParts[2] + '-SNAPSHOT'
+    } else {
+        version = cmakeVersion
+    }
+} else {
+    version = providers.environmentVariable('RIAG_JAVA_VERSION').orElse('0.0.0-SNAPSHOT').get()
+}
+
+println "Project version: $version"
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.arrow:arrow-c-data:18.2.0'
+    implementation 'org.apache.arrow:arrow-vector:18.2.0'
+    implementation 'org.apache.arrow:arrow-memory-core:18.2.0'
+    testImplementation platform('org.junit:junit-bom:5.10.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.apache.arrow:arrow-memory-netty:18.2.0'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+if (System.getenv('SKIP_CMAKE_BUILD') != 'true') {
+    processResources {
+        dependsOn 'copyNativeLibs'
+    }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'riag'
+                description = 'RiaG is an embedded graph database built for query speed and scalability.'
+                url = 'https://github.com/cntSafety/RiaGraph'
+                inceptionYear = '2020'
+                properties = [
+                        'project.build.sourceEncoding'    : 'UTF-8',
+                        'project.reporting.outputEncoding': 'UTF-8',
+                        'java.version'                    : '21',
+                        'maven.compiler.source'           : '21',
+                        'maven.compiler.target'           : '21'
+                ]
+                licenses {
+                    license {
+                        name = 'MIT License'
+                        url = 'https://github.com/cntSafety/RiaGraph/blob/master/LICENSE'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'cntSafety'
+                        name = 'The RiaGraph Contributors'
+                        url = 'https://github.com/cntSafety'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:git://github.com/cntSafety/RiaGraph.git'
+                    developerConnection = 'scm:git:ssh://github.com/cntSafety/RiaGraph.git'
+                    url = 'https://github.com/cntSafety/RiaGraph'
+                }
+            }
+            from components.java
+        }
+    }
+
+    repositories {
+        // The local repository is used for manual publishing to Maven Central
+        // Portal. It is located in `build/repo`.
+        // To publish, run `././gradlew publishMavenJavaToLocalRepo`
+        // This is a workaround to force Gradle handle signing and checksum
+        maven {
+            name = 'LocalRepo'
+            url = uri("$buildDir/repo")
+        }
+        maven {
+            name = 'GitHubPackages'
+            url = uri('https://maven.pkg.github.com/cntSafety/RiaGraph')
+            credentials {
+                username = System.getenv('GITHUB_ACTOR')
+                password = System.getenv('GITHUB_TOKEN')
+            }
+        }
+    }
+}
+
+signing {
+    def signingKey = providers
+            .environmentVariable("GPG_SIGNING_KEY")
+    def signingPassphrase = providers
+            .environmentVariable("GPG_SIGNING_PASSPHRASE")
+    if (signingKey.isPresent() && signingPassphrase.isPresent()) {
+        useInMemoryPgpKeys(signingKey.get(), signingPassphrase.get())
+        sign publishing.publications.mavenJava
+    } else {
+        println "Skipping signing, no GPG key found"
+    }
+}
+
+task cmake(type: Exec) {
+    workingDir '../..'
+    commandLine 'make', 'java'
+    environment NUM_THREADS: Runtime.getRuntime().availableProcessors()
+}
+
+task copyNativeLibs(type: Copy) {
+    from('build') {
+        include 'libriag_java_native.*'
+    }
+    into 'src/main/resources'
+    dependsOn 'cmake'
+}
+
+tasks.sourcesJar {
+    mustRunAfter 'copyNativeLibs'
+}
+
+test {
+    useJUnitPlatform()
+    systemProperty 'riagraph.projectDir', projectDir.absolutePath
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat = 'full'
+        showStandardStreams = true
+    }
+    jvmArgs(
+            '-XX:+UnlockDiagnosticVMOptions',
+            "-XX:ErrorFile=${layout.buildDirectory.file('hs_err_pid%p.log').get().asFile.absolutePath}",
+            '-XX:+CreateCoredumpOnCrash'
+    )
+}
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}

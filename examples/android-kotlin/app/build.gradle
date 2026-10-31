@@ -1,0 +1,28 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.riagraph.example'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.riagraph.example'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName '1.0'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+}
+
+dependencies {
+    def riagJar = providers.gradleProperty('riagJar')
+    if (!riagJar.isPresent()) {
+        throw new GradleException('Pass -PriagJar=/path/to/riag.jar')
+    }
+    implementation files(riagJar.get())
+    androidTestImplementation 'androidx.test:core-ktx:1.6.1'
+    androidTestImplementation 'androidx.test.ext:junit-ktx:1.2.1'
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+}

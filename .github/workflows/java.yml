@@ -1,0 +1,49 @@
+name: Java
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      nativeRunId:
+        description: "Optional cntSafety/RiaGraph Java native library workflow run ID"
+        required: false
+        type: string
+
+jobs:
+  build-and-test:
+    name: Build and test
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Download native libraries
+        env:
+          GH_TOKEN: ${{ secrets.TOKEN_GH_RIAGRAPH_PUBLISH }}
+          RIAG_GITHUB_REPOSITORY: cntSafety/RiaGraph
+          RIAG_JAVA_NATIVE_RUN_ID: ${{ inputs.nativeRunId }}
+        run: ./download-native-libs.sh
+
+      - name: Prepare test datasets
+        run: |
+          git clone --depth 1 https://github.com/riagraph/dataset.git ./dataset
+
+      - name: Build
+        env:
+          SKIP_CMAKE_BUILD: "true"
+        run: ./gradlew build -x test
+
+      - name: Test
+        env:
+          SKIP_CMAKE_BUILD: "true"
+        run: ./gradlew test
